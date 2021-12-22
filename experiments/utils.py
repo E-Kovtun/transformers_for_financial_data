@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import random
+import re
+import spacy
+
+from copy import deepcopy
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 # from sklearn.feature_extraction.text import TfidfVectorizer
@@ -22,7 +26,7 @@ import datetime
 
 # --------------------------- Data reading and some preprocessing ---------------------------
 
-def read_preprocessed_financial_data(data_folder):
+def read_preprocessed_financial_data(data_folder, enc_cols=[]):
     transactions = pd.read_csv(data_folder+'transactions.csv', sep=',')
     tr_types = pd.read_csv(data_folder+'tr_types.csv', sep=';')
     tr_mcc_codes = pd.read_csv(data_folder+'tr_mcc_codes.csv', sep=';')
@@ -46,6 +50,16 @@ def read_preprocessed_financial_data(data_folder):
     df['mcc_description'] = df['mcc_description'].fillna(df['mcc_description'].value_counts().index[0])
     df['tr_description'] = df['tr_description'].fillna(df['tr_description'].value_counts().index[0])
     
+    df['mcc_description'] = df['mcc_description'].apply(lambda x: re.sub('[^а-яА-Я\s]', '', x.lower()))
+    df['tr_description'] = df['tr_description'].apply(lambda x: re.sub('[^а-яА-Я\s]', '', x.lower()))
+    
+    if len(enc_cols) > 0:
+        nlp = spacy.load('ru_core_news_lg')
+        
+        for col in enc_cols:
+            col_dict = {x: nlp(x).vector for x in df[col].unique()}
+            df[col] = df[col].map(col_dict)
+    
     return df
 
 # --------------------------- Data preparation for models' training ---------------------------
@@ -68,16 +82,36 @@ class DatasetSamples(Dataset):
 def create_dataset(df, features, batch_size, shuffle=True):
     data_samples = []
     targets = []
+    desc_cols = ['mcc_description', 'tr_description']
+    feat = list(set(features) - set(desc_cols))
+    desc_cols_feat = list(set(features) & set(desc_cols))
+    
     for client in df['customer_id'].unique():
         df1 = df[df['customer_id'] == client]
         for i in range(len(df1)):
-            data_samle = torch.cat(
+            data_sample = torch.cat(
                 [
-                    torch.tensor([df1[col].iloc[i]]).T for col in features
+                    torch.tensor([df1[col].iloc[i]]).T for col in feat
                 ], dim=1
             )
-            data_samples.append(data_samle)
+#             print('data_sample.size()', data_sample.size())
+            if len(desc_cols_feat) > 0:
+#                 print(len(df1['mcc_description'].iloc[i]), np.array(df1['mcc_description'].iloc[i]).shape, torch.tensor(df1['mcc_description'].iloc[i]).size())
+                data_sample_desc = torch.cat(
+                    [
+                        torch.tensor(df1[col].iloc[i]) for col in desc_cols_feat
+                    ], dim=1
+                )
+#                 print('data_sample_desc.size()', data_sample_desc.size())
+                data_sample = torch.cat(
+                    [
+                        data_sample, data_sample_desc
+                    ], dim=1
+                )
+#                 print('data_sample.size() after desc', data_sample.size())
+            data_samples.append(data_sample)
             targets.append(df1['gender'].iloc[i][0])
+        
             
     data_samples = nn.utils.rnn.pad_sequence(tuple(data_samples))
 
@@ -97,8 +131,10 @@ class RNN(nn.Module):
             self.rnn = nn.LSTM(input_size, self.hidden_rnn_size, batch_first=True)
         elif self.base_type == "GRU":
             self.rnn = nn.GRU(input_size, self.hidden_rnn_size, batch_first=True)
+        elif self.base_type == "RNN":
+            self.rnn = nn.RNN(input_size, self.hidden_rnn_size, batch_first=True)
         else:
-            raise ValueError("Choose LSTM or GRU type")
+            raise ValueError("Choose LSTM, or GRU, or RNN type")
 
         self.linear = nn.Linear(self.hidden_rnn_size, output_size)
 
@@ -106,7 +142,7 @@ class RNN(nn.Module):
         h_n = input_samples
         if self.base_type == "LSTM":
             output, (h_n, c_n) = self.rnn(input_samples)
-        elif self.base_type == "GRU":
+        elif self.base_type == "GRU" or self.base_type == "RNN":
             output, h_n = self.rnn(input_samples)
 
         output = self.linear(torch.squeeze(h_n))
@@ -264,6 +300,14 @@ def prepare_logs(log_dir):
 
 
 def plot_train_process(log_dir):
+    plt.rc('font', size=22)          # controls default text sizes
+    plt.rc('axes', titlesize=30)     # fontsize of the axes title
+    plt.rc('axes', labelsize=30)     # fontsize of the x and y labels
+    plt.rc('xtick', labelsize=30)    # fontsize of the tick labels
+    plt.rc('ytick', labelsize=30)    # fontsize of the tick labels
+    plt.rc('legend', fontsize=30)    # legend fontsize
+    plt.rc('figure', titlesize=22)   # fontsize of the figure title 
+
     dict_logs = prepare_logs(log_dir)
     
     # plot losses
@@ -281,3 +325,59 @@ def plot_train_process(log_dir):
     plt.legend(loc="center right")
     
     return dict_logs
+
+# --------------------------- Cross-validation function ---------------------------
+
+def cross_validation(df_week, base_type, base_model, features, group_col='customer_id', n_splits=5, epochs=100):
+    group_kfold = GroupKFold(n_splits=n_splits)
+    metrics = {'Accuracy': [], 'ROC AUC': [], 'PR AUC': []}
+    for train_index, test_index in group_kfold.split(X=df_week, groups=df_week[group_col]):
+        train_data = df_week.iloc[train_index]
+        test_data = df_week.iloc[test_index]
+
+        random.seed(123)
+        val_customer_id = random.sample(train_data['customer_id'].unique().tolist(), int(train_data['customer_id'].nunique() * 0.3))
+        val_data = train_data[train_data['customer_id'].isin(val_customer_id)]
+        train_data = train_data[~train_data['customer_id'].isin(val_customer_id)]
+
+        train_dataset = create_dataset(train_data, features, batch_size=64, shuffle=True)
+        val_dataset = create_dataset(val_data, features, batch_size=64, shuffle=False)
+        test_dataset = create_dataset(test_data, features, batch_size=64, shuffle=False)    
+
+        model = ClassificationModel(
+            model=base_model,
+            train_data=train_dataset,
+            test_data=val_dataset
+        )
+        
+        current_time = datetime.datetime.now().strftime("%m%d%Y_%H:%M:%S")
+        experiment_name = base_type + "_" + str(epochs) + "_" + current_time
+
+        logger = pl.loggers.TensorBoardLogger(save_dir='../logs/', name=experiment_name)
+
+        checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            monitor='val_loss',
+            dirpath=f'../logs/{experiment_name}',
+            filename='{epoch:02d}-{val_loss:.3f}',
+            mode='min')
+
+        trainer = pl.Trainer(
+            max_epochs=epochs, 
+            gpus=[0],  
+            benchmark=True, 
+            check_val_every_n_epoch=1, 
+            logger=logger,
+            callbacks=[checkpoint_callback])
+
+        trainer.fit(model)
+        torch.save(model.model.state_dict(), '../models/{}.pth'.format(experiment_name))
+        
+        dict_logs = plot_train_process(logger.log_dir)
+        plt.show()
+
+        test_predictions, test_targets, metric = test_model(model, test_dataset)
+        metrics['Accuracy'].append(metric[0])
+        metrics['ROC AUC'].append(metric[1])
+        metrics['PR AUC'].append(metric[2])
+        
+    return metrics
