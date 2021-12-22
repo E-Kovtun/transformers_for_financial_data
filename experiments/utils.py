@@ -330,10 +330,10 @@ def time_memory_consumption(data, path):
     with open(path, 'a') as f:
         f.write(data)
 
-def cross_validation(df_week, base_type, base_model, features, group_col='customer_id', n_splits=5, epochs=100):
+def cross_validation(df_week, base_type, base_model, features, group_col='customer_id', n_splits=5, epochs=100, gpus=[0]):
     group_kfold = GroupKFold(n_splits=n_splits)
     metrics = {'Accuracy': [], 'ROC AUC': [], 'PR AUC': []}
-    for train_index, test_index in group_kfold.split(X=df_week, groups=df_week[group_col]):
+    for i, (train_index, test_index) in enumerate(group_kfold.split(X=df_week, groups=df_week[group_col])):
         train_data = df_week.iloc[train_index]
         test_data = df_week.iloc[test_index]
 
@@ -365,27 +365,36 @@ def cross_validation(df_week, base_type, base_model, features, group_col='custom
 
         trainer = pl.Trainer(
             max_epochs=epochs, 
-            gpus=[0],  
+            gpus=gpus,  
             benchmark=True, 
             check_val_every_n_epoch=1, 
             logger=logger,
             callbacks=[checkpoint_callback])
 
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, record_shapes=True) as prof:
-            with record_function("model_training"):
-                trainer.fit(model)
+        if i == 0:
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, record_shapes=True
+            ) as prof:
+                with record_function("model_training"):
+                    trainer.fit(model)
+            time_memory_consumption(prof.key_averages().table(), '../models/training_{}.txt'.format(experiment_name))
+        else:
+            trainer.fit(model)
         torch.save(model.model.state_dict(), '../models/{}.pth'.format(experiment_name))
-        time_memory_consumption(prof.key_averages().table(), '../models/training_{}.txt'.format(experiment_name))
-        print(prof.key_averages().table())
         
         dict_logs = plot_train_process(logger.log_dir)
         plt.show()
 
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, record_shapes=True) as prof:
-            with record_function("model_testing"):
-                test_predictions, test_targets, metric = test_model(model, test_dataset)
-        time_memory_consumption(prof.key_averages().table(), '../models/testing_{}.txt'.format(experiment_name))
-        print(prof.key_averages().table())
+        if i == 0:
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, record_shapes=True
+            ) as prof:
+                with record_function("model_testing"):
+                    test_predictions, test_targets, metric = test_model(model, test_dataset)
+            time_memory_consumption(prof.key_averages().table(), '../models/testing_{}.txt'.format(experiment_name))
+        else:
+            test_predictions, test_targets, metric = test_model(model, test_dataset)
+
         metrics['Accuracy'].append(metric[0])
         metrics['ROC AUC'].append(metric[1])
         metrics['PR AUC'].append(metric[2])
