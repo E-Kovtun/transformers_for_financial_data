@@ -311,7 +311,7 @@ def plot_train_process(log_dir):
     dict_logs = prepare_logs(log_dir)
     
     # plot losses
-    plt.figure(figsize=(24, 6))
+    plt.figure(figsize=(24, 8))
     plt.subplot(1, 2, 1)
     plt.title("Loss")
     plt.plot(dict_logs["train_loss"], label="Train")
