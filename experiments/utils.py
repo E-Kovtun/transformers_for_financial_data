@@ -24,6 +24,8 @@ import pytorch_lightning as pl
 
 import datetime
 
+from torch.profiler import profile, record_function, ProfilerActivity
+
 # --------------------------- Data reading and some preprocessing ---------------------------
 
 def read_preprocessed_financial_data(data_folder, enc_cols=[]):
@@ -94,21 +96,17 @@ def create_dataset(df, features, batch_size, shuffle=True):
                     torch.tensor([df1[col].iloc[i]]).T for col in feat
                 ], dim=1
             )
-#             print('data_sample.size()', data_sample.size())
             if len(desc_cols_feat) > 0:
-#                 print(len(df1['mcc_description'].iloc[i]), np.array(df1['mcc_description'].iloc[i]).shape, torch.tensor(df1['mcc_description'].iloc[i]).size())
                 data_sample_desc = torch.cat(
                     [
                         torch.tensor(df1[col].iloc[i]) for col in desc_cols_feat
                     ], dim=1
                 )
-#                 print('data_sample_desc.size()', data_sample_desc.size())
                 data_sample = torch.cat(
                     [
                         data_sample, data_sample_desc
                     ], dim=1
                 )
-#                 print('data_sample.size() after desc', data_sample.size())
             data_samples.append(data_sample)
             targets.append(df1['gender'].iloc[i][0])
         
@@ -328,6 +326,10 @@ def plot_train_process(log_dir):
 
 # --------------------------- Cross-validation function ---------------------------
 
+def time_memory_consumption(data, path):
+    with open(path, 'a') as f:
+        f.write(data)
+
 def cross_validation(df_week, base_type, base_model, features, group_col='customer_id', n_splits=5, epochs=100):
     group_kfold = GroupKFold(n_splits=n_splits)
     metrics = {'Accuracy': [], 'ROC AUC': [], 'PR AUC': []}
@@ -369,13 +371,21 @@ def cross_validation(df_week, base_type, base_model, features, group_col='custom
             logger=logger,
             callbacks=[checkpoint_callback])
 
-        trainer.fit(model)
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, record_shapes=True) as prof:
+            with record_function("model_training"):
+                trainer.fit(model)
         torch.save(model.model.state_dict(), '../models/{}.pth'.format(experiment_name))
+        time_memory_consumption(prof.key_averages().table(), '../models/training_{}.txt'.format(experiment_name))
+        print(prof.key_averages().table())
         
         dict_logs = plot_train_process(logger.log_dir)
         plt.show()
 
-        test_predictions, test_targets, metric = test_model(model, test_dataset)
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True, record_shapes=True) as prof:
+            with record_function("model_testing"):
+                test_predictions, test_targets, metric = test_model(model, test_dataset)
+        time_memory_consumption(prof.key_averages().table(), '../models/testing_{}.txt'.format(experiment_name))
+        print(prof.key_averages().table())
         metrics['Accuracy'].append(metric[0])
         metrics['ROC AUC'].append(metric[1])
         metrics['PR AUC'].append(metric[2])
