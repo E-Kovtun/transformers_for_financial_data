@@ -301,9 +301,9 @@ def plot_train_process(log_dir):
     plt.rc('font', size=22)          # controls default text sizes
     plt.rc('axes', titlesize=30)     # fontsize of the axes title
     plt.rc('axes', labelsize=30)     # fontsize of the x and y labels
-    plt.rc('xtick', labelsize=30)    # fontsize of the tick labels
-    plt.rc('ytick', labelsize=30)    # fontsize of the tick labels
-    plt.rc('legend', fontsize=30)    # legend fontsize
+    plt.rc('xtick', labelsize=24)    # fontsize of the tick labels
+    plt.rc('ytick', labelsize=24)    # fontsize of the tick labels
+    plt.rc('legend', fontsize=26)    # legend fontsize
     plt.rc('figure', titlesize=22)   # fontsize of the figure title 
 
     dict_logs = prepare_logs(log_dir)
@@ -362,6 +362,14 @@ def cross_validation(df_week, base_type, base_model, features, group_col='custom
             dirpath=f'../logs/{experiment_name}',
             filename='{epoch:02d}-{val_loss:.3f}',
             mode='min')
+        
+        early_stop_callback = pl.callbacks.early_stopping.EarlyStopping(
+            monitor="val_loss", 
+            min_delta=0.00, 
+            patience=4, 
+            verbose=False, 
+            mode="min"
+        )
 
         trainer = pl.Trainer(
             max_epochs=epochs, 
@@ -369,7 +377,7 @@ def cross_validation(df_week, base_type, base_model, features, group_col='custom
             benchmark=True, 
             check_val_every_n_epoch=1, 
             logger=logger,
-            callbacks=[checkpoint_callback])
+            callbacks=[checkpoint_callback, early_stop_callback])
 
         if i == 0:
             with profile(
