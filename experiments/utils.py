@@ -150,7 +150,7 @@ class RNN(nn.Module):
     
     
 class ClassificationModel(pl.LightningModule):
-    def __init__(self, model, train_data, test_data, batch_size=64, learning_rate=1e-3):
+    def __init__(self, model, train_data, test_data, batch_size=32, learning_rate=1e-3):
         super(ClassificationModel, self).__init__()
         self.model = model
 
@@ -258,7 +258,7 @@ def calculate_metrics(target, y_pred):
 
 
 def test_model(model, dataset):
-    test_loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
+    test_loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=4)
 
     test_predictions = []
     test_targets = []
@@ -342,9 +342,9 @@ def cross_validation(df_week, base_type, base_model, features, group_col='custom
         val_data = train_data[train_data['customer_id'].isin(val_customer_id)]
         train_data = train_data[~train_data['customer_id'].isin(val_customer_id)]
 
-        train_dataset = create_dataset(train_data, features, batch_size=64, shuffle=True)
-        val_dataset = create_dataset(val_data, features, batch_size=64, shuffle=False)
-        test_dataset = create_dataset(test_data, features, batch_size=64, shuffle=False)    
+        train_dataset = create_dataset(train_data, features, batch_size=32, shuffle=True)
+        val_dataset = create_dataset(val_data, features, batch_size=32, shuffle=False)
+        test_dataset = create_dataset(test_data, features, batch_size=32, shuffle=False)    
 
         model = ClassificationModel(
             model=base_model,
